@@ -168,49 +168,71 @@ async def main():
     ci = args[0] if args else "017"
     si = args[1] if len(args) > 1 else "127637"
     workers = int(args[2]) if len(args) > 2 else 8
-    rounds = int(os.environ.get("BLAZE_ROUNDS", "20"))
+    rounds = os.environ.get("BLAZE_ROUNDS")
+    rounds = int(rounds) if rounds else None   # None = run forever
+
+    idle_poll = float(os.environ.get("BLAZE_IDLE_POLL", "20"))   # secs between scans when full
 
     print(f"🔥 BLAZE v2 | ci={ci} si={si} workers={workers} seats/worker={SEATS_PER}")
+    print(f"   ♾️  running until you stop it (Ctrl+C). Re-claims seats as unpaid claims expire.")
     total = 0
-    claimed_all = set()   # never re-attempt seats already claimed by any worker
+    rnd = 0
     t_start = time.time()
+    t_last_booking = t_start
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(12, connect=6)) as sc:
         sc.headers.update({"User-Agent": UA})
-        for rnd in range(rounds):
+        while rounds is None or rnd < rounds:
+            rnd += 1
             t_fetch = time.time()
-            seats = await fetch_seat_plan(sc, ci, si)
+            try:
+                seats = await fetch_seat_plan(sc, ci, si)
+            except Exception as e:
+                print(f"  [round {rnd}] seatplan error: {str(e)[:60]} — retrying...")
+                await asyncio.sleep(5)
+                continue
             if seats is None:
-                print(f"  [round {rnd+1}] seatplan busy, waiting...")
+                print(f"  [round {rnd}] seatplan busy, waiting...")
                 await asyncio.sleep(10)
                 continue
             if not seats:
-                print(f"  🏁 no Normal seats left — house full!")
-                break
+                idle = time.time() - t_last_booking
+                print(f"  [round {rnd}] house currently full "
+                      f"(full for {idle:.0f}s) — rescanning in {idle_poll:.0f}s for expired claims...")
+                await asyncio.sleep(idle_poll)
+                continue
 
-            # drop seats already claimed by earlier rounds (stale snapshots)
-            seats = [s for s in seats if s[0] not in claimed_all]
-            chunks = [seats[i:i+SEATS_PER] for i in range(0, len(seats), SEATS_PER)]
+            # chunks are disjoint within a round; across rounds, previously
+            # claimed seats MAY legitimately return (expired claims) so no filter.
+            fresh = seats
+            chunks = [fresh[i:i+SEATS_PER] for i in range(0, len(fresh), SEATS_PER)]
             chunks = [c for c in chunks if c]
-            print(f"  [round {rnd+1}] {len(seats)} avail ({time.time()-t_fetch:.1f}s fetch) -> {len(chunks)} chunks")
+            print(f"  [round {rnd}] {len(fresh)} claimable ({len(seats)} avail, {time.time()-t_fetch:.1f}s fetch) -> {len(chunks)} chunks")
+            if not chunks:
+                await asyncio.sleep(idle_poll)
+                continue
 
             sem = asyncio.Semaphore(workers)
             results = {}
             tasks = [book_chunk(ci, si, w, chunks[w], sem, results) for w in range(min(len(chunks), workers))]
             booked_list = await asyncio.gather(*tasks)
 
-            # record which seats each worker attempted (success or occupied-reject):
-            # a rejected chunk's seats may still be free; only successful ones are gone.
             booked = sum(booked_list)
+            if booked:
+                t_last_booking = time.time()
             total += booked
             for w in sorted(results):
                 print(f"    {results[w]}")
             elapsed = time.time() - t_start
-            print(f"  ── +{booked} | total {total} | {elapsed:.1f}s | {total/elapsed*60 if elapsed else 0:.0f}/min")
+            print(f"  ── +{booked} | total {total} | elapsed {elapsed:.0f}s | {total/elapsed*60 if elapsed else 0:.0f}/min")
             if booked == 0:
-                await asyncio.sleep(3)
+                # seats visible but all rejected — likely just-claimed by others; brief pause
+                await asyncio.sleep(6)
 
     print(f"\n🏁 TOTAL: {total} seats in {time.time()-t_start:.1f}s")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 stopped by user")

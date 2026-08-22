@@ -62,4 +62,7 @@ async def main():
     await run(ci, si, args.workers)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 stopped by user")
