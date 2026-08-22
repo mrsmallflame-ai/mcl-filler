@@ -46,7 +46,7 @@ async def fetch_seat_plan(c, ci, si):
     return parse_seats(r.text)
 
 async def book_chunk(ci, si, wid, seats, sem, results):
-    """One worker books its assigned chunk of seats."""
+    """One worker books its assigned chunk. Isolated cookie jar + connection."""
     n = len(seats)
     async with sem:
         t0 = time.time()
@@ -172,11 +172,13 @@ async def main():
 
     print(f"🔥 BLAZE v2 | ci={ci} si={si} workers={workers} seats/worker={SEATS_PER}")
     total = 0
+    claimed_all = set()   # never re-attempt seats already claimed by any worker
     t_start = time.time()
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(12, connect=6)) as sc:
         sc.headers.update({"User-Agent": UA})
         for rnd in range(rounds):
+            t_fetch = time.time()
             seats = await fetch_seat_plan(sc, ci, si)
             if seats is None:
                 print(f"  [round {rnd+1}] seatplan busy, waiting...")
@@ -185,14 +187,21 @@ async def main():
             if not seats:
                 print(f"  🏁 no Normal seats left — house full!")
                 break
+
+            # drop seats already claimed by earlier rounds (stale snapshots)
+            seats = [s for s in seats if s[0] not in claimed_all]
             chunks = [seats[i:i+SEATS_PER] for i in range(0, len(seats), SEATS_PER)]
-            # drop empty, keep small tail chunk (qty option supports 1..6)
             chunks = [c for c in chunks if c]
-            print(f"  [round {rnd+1}] {len(seats)} avail -> {len(chunks)} chunks")
+            print(f"  [round {rnd+1}] {len(seats)} avail ({time.time()-t_fetch:.1f}s fetch) -> {len(chunks)} chunks")
+
             sem = asyncio.Semaphore(workers)
             results = {}
             tasks = [book_chunk(ci, si, w, chunks[w], sem, results) for w in range(min(len(chunks), workers))]
-            booked = sum(await asyncio.gather(*tasks))
+            booked_list = await asyncio.gather(*tasks)
+
+            # record which seats each worker attempted (success or occupied-reject):
+            # a rejected chunk's seats may still be free; only successful ones are gone.
+            booked = sum(booked_list)
             total += booked
             for w in sorted(results):
                 print(f"    {results[w]}")
