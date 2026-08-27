@@ -17,6 +17,9 @@ import httpx
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BASE = "https://www4.mclcinema.com"
 SEATS_PER = int(os.environ.get("BLAZE_SEATS", "6"))
+# Optional egress proxy for when MCL blocks this machine's IP (datacenter/WARP bans).
+# Env: BLAZE_PROXY=socks5://host:port  (or http://...) — needs `pip install socksio` for socks.
+PROXY = os.environ.get("BLAZE_PROXY") or None
 
 def parse_seats(html):
     """Extract Normal seats (name,row,col) from seat-plan HTML (any attr case)."""
@@ -51,7 +54,7 @@ async def book_chunk(ci, si, wid, seats, sem, results):
     async with sem:
         t0 = time.time()
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(12, connect=6)) as c:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(12, connect=6), proxy=PROXY) as c:
                 c.headers.update({"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
 
                 r = await c.get("https://www.mclcinema.com/MCLSelectSeat.aspx",
@@ -173,14 +176,15 @@ async def main():
 
     idle_poll = float(os.environ.get("BLAZE_IDLE_POLL", "20"))   # secs between scans when full
 
-    print(f"🔥 BLAZE v2 | ci={ci} si={si} workers={workers} seats/worker={SEATS_PER}")
+    print(f"🔥 BLAZE v2 | ci={ci} si={si} workers={workers} seats/worker={SEATS_PER}"
+          + (f" | proxy={PROXY}" if PROXY else " | direct"))
     print(f"   ♾️  running until you stop it (Ctrl+C). Re-claims seats as unpaid claims expire.")
     total = 0
     rnd = 0
     t_start = time.time()
     t_last_booking = t_start
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(12, connect=6)) as sc:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(12, connect=6), proxy=PROXY) as sc:
         sc.headers.update({"User-Agent": UA})
         while rounds is None or rnd < rounds:
             rnd += 1
