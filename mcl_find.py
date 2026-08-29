@@ -50,7 +50,7 @@ async def fetch(c, url, params=None, referer=None):
                 return r.text
         except Exception as e:
             if attempt == 6:
-                raise
+                return ""   # unreachable — network blocked; let the caller show a friendly error
         await asyncio.sleep(min(3 * attempt + (attempt % 3), 20))
     return ""
 
@@ -129,6 +129,16 @@ async def main():
                 htmls[url] = h
                 if a.debug:
                     open(f"/tmp/mcl-find-{len(htmls)}.html", "w").write(h)
+
+    if not htmls:
+        print("❌ MCL not reachable" + (" through proxy " + PROXY if PROXY else " (this IP may be blocked)") + ".")
+        print("   Fixes:") 
+        print("   • Run the Mac relay first (mac-relay.sh on your Mac), then: export BLAZE_PROXY=socks5://127.0.0.1:11080")
+        print("   • Or run the finder from your Mac: python3 mcl_find.py ...")
+        print("   • Or retry later — MCL temporarily bans heavy IPs for minutes at a time.")
+        if a.json:
+            print("[]")
+        sys.exit(2)
 
     sessions = []
     seen = set()

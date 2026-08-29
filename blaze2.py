@@ -8,7 +8,7 @@ Per round:
   4. Loop until no seats left or zero progress twice.
 
 Usage: python3 blaze2.py <ci> <si> [workers] [--debug]
-Env:   BLAZE_SEATS=6 (seats per worker), BLAZE_ROUNDS=30
+Env:   BLAZE_SEATS=6 (seats per worker, MAX 6 - MCL limit), BLAZE_ROUNDS=30
 """
 import asyncio, json, os, re, sys, time
 import html as H
@@ -16,7 +16,20 @@ import httpx
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BASE = "https://www4.mclcinema.com"
-SEATS_PER = int(os.environ.get("BLAZE_SEATS", "6"))
+# MCL hard cap: max 6 seats per transaction. Requesting more than 6 makes every
+# claim fail with "[cap] max 6 seats/transaction". Clamp instead of failing.
+_raw_seats = os.environ.get("BLAZE_SEATS", "6")
+try:
+    SEATS_PER = int(_raw_seats)
+except ValueError:
+    print(f"WARNING: BLAZE_SEATS={_raw_seats!r} is not a number -- using 6")
+    SEATS_PER = 6
+if SEATS_PER > 6:
+    print("WARNING: BLAZE_SEATS=%d > 6 -- MCL only allows 6 seats per transaction. "
+          "Clamping to 6. To fill faster, raise WORKERS, not chunk size." % SEATS_PER)
+    SEATS_PER = 6
+if SEATS_PER < 1:
+    SEATS_PER = 1
 # Optional egress proxy for when MCL blocks this machine's IP (datacenter/WARP bans).
 # Env: BLAZE_PROXY=socks5://host:port  (or http://...) — needs `pip install socksio` for socks.
 PROXY = os.environ.get("BLAZE_PROXY") or None
@@ -192,7 +205,11 @@ async def main():
             try:
                 seats = await fetch_seat_plan(sc, ci, si)
             except Exception as e:
-                print(f"  [round {rnd}] seatplan error: {str(e)[:60]} — retrying...")
+                msg = str(e)[:60] or type(e).__name__
+                print(f"  [round {rnd}] can't reach MCL seat plan ({msg}) — retrying...")
+                if "Connect" in msg or "timed out" in msg.lower():
+                    print("      💡 MCL blocks datacenter/foreign IPs. If this keeps failing:")
+                    print("         run mac-relay.sh on your Mac, then export BLAZE_PROXY=socks5://127.0.0.1:11080")
                 await asyncio.sleep(5)
                 continue
             if seats is None:

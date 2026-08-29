@@ -55,10 +55,28 @@ async def main():
     elif args.ci and args.si:
         ci, si = args.ci, args.si
     else:
-        p.print_help()
-        return
+        # No arguments? No problem — just ask. (3-year-old mode)
+        print("🎬 MCL Cinema Seat Filler\n")
+        print("   1. Open mclcinema.com and pick your movie + showtime")
+        print("   2. Copy the web link at the top of your browser")
+        print("   3. Paste it below and press Enter\n")
+        try:
+            url = input("   🔗 Paste your MCL link here: ").strip().strip('\"').strip("'")
+        except (EOFError, KeyboardInterrupt):
+            print("\n👋 bye")
+            return
+        if not url:
+            print("❌ You didn't paste anything. Run me again and paste a link.")
+            return
+        ci, si = parse_mcl_url(url)
+        if not ci:
+            print(f"❌ That doesn't look like an MCL link (no ci/si found): {url[:100]}")
+            print("   Tip: open the seat page on mclcinema.com first, then copy that link.")
+            return
+        args.workers = args.workers or int(os.environ.get("BLAZE_WORKERS", "12"))
 
-    print(f"🎯 target: ci={ci} si={si} workers={args.workers}")
+    print(f"🎯 target: cinema {ci}, showtime {si}, workers={args.workers}")
+    print("   (stops only when YOU press Ctrl+C — it re-grabs seats as others' unpaid holds expire)")
     await run(ci, si, args.workers)
 
 if __name__ == "__main__":
